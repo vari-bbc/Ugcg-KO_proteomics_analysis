@@ -1,0 +1,893 @@
+---
+title: "Proteomics Analysis"
+author: "Hannah Damico"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+options(bitmapType = "cairo", scipen = 9999)
+library(tidyverse)
+library(BiocManager)
+library(statmod)
+library(DataExplorer)
+library(stringr)
+library(ggprism)
+library(plotly)
+library(knitr)
+library(DT)
+library(readr)
+library(limma)
+library(reshape2)
+library(pheatmap)
+library(patchwork)
+library(msigdbr)
+library(cowplot)
+# these have to be installed before you can use the imputeLCMD package
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install(c("pcaMethods", "impute", "org.Mm.eg.db", "clusterProfiler", "pairwise_termsim"))
+
+library(impute)
+library(pcaMethods)
+library(imputeLCMD)
+library(clusterProfiler)
+library(enrichplot)
+library(org.Mm.eg.db)
+
+
+```
+
+
+```{r}
+# import data
+data_og <- read.csv("../Data/PC00040_DIA_df_1_cleaned.csv")
+# View(data_og)
+```
+
+```{r warning = TRUE, message = FALSE}
+data_mod <- data_og
+## clean data
+data_mod$PG.ProteinNames <- gsub("_MOUSE","", data_mod$PG.ProteinNames) 
+# get proteins and genes up front
+data_mod <- data_mod %>% relocate(PG.Genes, PG.ProteinGroups)
+# remove unnneeded columns
+
+data_mod <- data_mod[!colnames(data_mod) %in% c("PG.MolecularWeight","PG.NrOfStrippedSequencesIdentified..Experiment.wide.")]
+
+data_mod$uniq_id = paste(data_mod$PG.ProteinGroups, data_mod$PG.Genes, sep = "___")
+
+# data_mod will be used for PCA
+melted_df <- melt(data_mod, ID.vars = colnames(data_mod)[1:4], variable.name = "Sample", value.name = "value")
+
+melted_df <- melted_df %>% mutate(Group = sub(".*_(.*?)_.*", "\\1", melted_df$Sample))
+
+# create repeated measure ID for limma blocks later
+# since samples are paired
+melted_df$ID <- 
+apply(melted_df, 1, function(row) substr(row["Sample"], nchar(row["Sample"]), nchar(row["Sample"])))
+# table(melted_df$Group, melted_df$ID) # checks counts
+
+data_new <- dcast(melted_df, Sample ~ uniq_id,  value.var = "value")
+
+data_new <- data_new %>% mutate(Sample = sub("^[^_]*_", "", data_new$Sample),Group = sub(".*_(.*?)_.*", "\\1", data_new$Sample)) %>% relocate(Sample,Group)
+# rownames(data_new) <- data_new$Sample
+
+```
+
+
+
+#  {.tabset}
+## QC and data processing {.tabset}
+
+This section pertains entirely to data processing including removal of proteins with too much missing data. Data are then normalized and missing measures are imputed.
+
+No proteins were removed due to 0 variance.
+
+
+```{r}
+## Check for 0 variance
+data_new[, 3:ncol(data_new)] = lapply(data_new[, 3:ncol(data_new)], as.numeric)
+
+xx = data.matrix(data_new[,3:ncol(data_new)])
+
+xx[is.na(xx)]  = 0
+
+data_new[,3:ncol(data_new)] = xx ### convert NA to 0s 
+
+vars = apply(data.matrix(data_new[,3:ncol(data_new)]), 2, var)
+ix = which(vars==0)
+
+if(length(ix)>0){
+data_new = data_new[,! colnames(data_new) %in% names(ix)]
+}
+
+```
+
+
+### Proteins identifed per sample
+
+Plotted here are the number of proteins detected per sample
+
+```{r 'num_proteins_detected_per_sample', cache = T}
+
+
+dats = data.frame( ID=data_new$Sample, Group = data_new$Group, count = unlist(lapply(1:nrow(data_new),function(x) sum(data_new[x,3:ncol(data_new)]>0,na.rm=T) )))
+
+dats = dats[order(dats$Group),]
+
+dats$ID = factor(dats$ID,levels=unique(dats$ID))
+
+# dats$ID = substr(dats$ID, start = 26, stop = 49)
+
+
+g = ggplot(dats,aes(x=ID,y=count,fill=Group)) + geom_bar(stat="identity")+theme_classic()+
+  scale_y_continuous(expand=c(0,0))+scale_fill_manual(values=viridis::viridis(8)[1:8] )+theme(axis.text.x = element_text(angle=45,hjust=1)) + ggtitle("Number of Proteins Detected Per Sample") 
+
+library(plotly) 
+ggplotly(g) 
+
+
+
+```
+
+
+### Missingness per sample 
+
+In the heatmaps below, white indicates a missing value, black indicates a value >0 was detected.  
+
+```{r 'miss_HM', cache = T}
+
+ind = function(x){
+  sum(as.numeric(I(x==0)))
+}
+# numC = apply(metabolites[,3:ncol(metabolites)], 2, ind)
+# temp = temp[2:nrow(temp), ]
+# temp = metabolites[, which(numC > 0)]
+
+
+temp = data_new[3:ncol(data_new)]
+ 
+temp[is.na(temp)] = 0 
+temp[temp > 0] = 1
+
+temp$Group = data_new$Group
+
+temp = temp %>% relocate(Group)
+rownames(temp) <- data_new$Sample
+
+heat.df = t(sapply(temp[, 2:length(temp)], as.numeric))
+
+# heat.df = t(temp[,3:length(temp)])
+
+rownames(heat.df) = NULL
+colnames(heat.df) = data_new$Sample
+
+
+Var1 <- viridis::viridis(2)
+names(Var1) <- unique(factor(temp$Group, levels = c("NTC", "Ugcg")))
+
+anno_colors <- list(Group = Var1)
+
+
+pheatmap(heat.df, annotation_col=subset(temp,select= c(Group)), cluster_cols = FALSE, color = colorRampPalette(c("white","black"))(2), annotation_colors = anno_colors)
+
+# colorRampPalette(c("white","black"))(2)
+
+pheatmap(heat.df,annotation_col=subset(temp,select= c(Group)),color = colorRampPalette(c("white","black"))(2),annotation_colors = anno_colors, cluster_cols = FALSE, cluster_rows = FALSE)
+#colorRampPalette(c("white","black"))(2)
+
+
+```
+
+
+```{r eval = FALSE, include = FALSE}
+# --------------------------------- HEAT MAP CODE BELOW: 
+
+rownames(heat.df) = NULL
+colnames(heat.df) = rownames(temp)
+
+
+temp$Group<- as.factor(temp$Group) 
+
+Var1 <- viridis::viridis(2)
+names(Var1) <- c(levels(temp$Group))
+
+anno_colors <- list(Group = Var1)
+
+
+heat.df = heat.df[order(apply(heat.df, 1, ind),decreasing=T),]
+
+pheatmap(heat.df, annotation_col=subset(temp,select= c(Group)), cluster_rows = FALSE, color = colorRampPalette(c("white","black"))(2), annotation_colors = anno_colors) 
+
+```
+
+
+
+### Remove proteins with too much missing data
+
+The plot below has the number of times a given protein is missing by group and how often that amount of missingness occurs.  Proteins with more than 30% of analytes missing will be removed. A larger proportion of WT treated samples have missing values than any other group. 
+
+
+```{r 'plot_missingness', cache = T}
+# look at missingness
+plot_missing(data_og) # a more specific look at which samples have missing data
+# Sample
+# plot_missing(melted_df)
+
+```
+
+```{r 'proteins_miss', cache=TRUE}
+# must go here so that NAs are now NAs again and not 0s
+data_new[data_new == 0]<-NA
+
+ind = function(x){
+  sum(as.numeric(I(x==0)))
+}
+
+
+dff=NULL ## renaming this to dff so I don't overwrite the original dataframe
+
+for(i in unique(data_new$Group)){
+  dff=rbind(dff, apply(data_new[data_new$Group == i, 3:ncol(data_new)], 2, ind))
+}
+
+
+
+dff=as.data.frame(t(dff))
+colnames(dff)  = unique(data_new$Group)
+# length(which(is.na(dff))) # 36 total missing values 
+
+## count missing values 
+miss <-  data.frame(Group = c("NTC", "Ugcg"), Missing = colSums(is.na(dff)), Freq = c(table(dff$NTC), table(dff$Ugcg)))
+
+
+na_plot1 <- ggplot(miss,aes(x=Missing,y=Freq,fill=Group)) + 
+  geom_bar(stat="identity") + 
+  theme_classic() + 
+  ggtitle("Compare Missingness by Group") + 
+  labs(caption = "Number of Times a Protein is Missing By Group")
+# 
+# ggplot(miss[miss$Missing != 0, ],aes(x=Missing,y=Freq,fill=Group)) + 
+#   geom_bar(stat="identity") + 
+#   theme_classic() + 
+#   ggtitle("Compare Missingness by Group") + 
+#   labs(caption = "Number of Times a Protein is Missing By Group; only showing missing counts >0")
+
+na_plot2 <-  ggplot(miss, aes(x=Missing,y=Freq, group = Group)) + geom_bar(stat="identity", aes(fill = Group), position = "dodge")  + theme_classic() + labs(caption = "Number of Times a Protein is Missing By Group")
+
+# ggplot(miss[miss$Missing != 0, ], aes(x=Missing,y=Freq, group = Group)) + geom_bar(stat="identity", aes(fill = Group), position = "dodge")  + theme_classic() + labs(caption = "Number of Times a Protein is Missing By Group; only showing missing counts >0")
+
+ggplotly(na_plot1)
+
+# ggplotly(na_plot2)
+
+rm = which(dff>.3*max(table(data_new$Group)), arr.ind=T)[,1] ## remove columns with >30% missingness
+## no columns had greater than 30% missingness
+# below steps won't change anything since we don't have missingness >30%
+
+# data_nm = data_new
+# 
+# data_nm = data_new[, ! colnames(data_new) %in% names(rm)] ## now the metab.w doesn't represent "data_new" object 
+
+
+# Calculate the percentage of missing values in each column
+missing_percentage <- colMeans(is.na(data_new[3:ncol(data_new)])) * 100
+
+# Identify columns with greater than 30% missingness
+columns_to_remove <- names(data_new[3:ncol(data_new)])[missing_percentage > 30]
+
+# summary(data.frame(missing_percentage))
+
+# Remove columns with greater than 30% missingness
+# data_new is written over to remove the cols w/ >30% missingness
+data_filtered <- data_new[, !(names(data_new) %in% columns_to_remove)]
+data_new <- data_filtered
+
+# we need to impute because we have proteins with <30% missingness
+missing_data_plot <- (data.frame(Protein = rownames(as.data.frame(missing_percentage)),missing_percentage)) %>% filter(missing_percentage > 0) %>% ggplot() + geom_bar(aes(Protein, missing_percentage), stat = "identity") + coord_flip() + ylab("% Missing Data") + ggtitle("Proteins with Missing Data")
+ggplotly(missing_data_plot)
+``` 
+
+### Proteins with missingness between 0-30%
+
+```{r 'proteins_miss30', cache= T, warning = FALSE}
+dff=NULL
+for(i in unique(data_filtered$Group)){
+  dff=rbind(dff, apply(data_filtered[data_filtered$Group == i,3:(ncol(data_filtered))], 2, ind))
+}
+
+dff=as.data.frame(t(dff))
+colnames(dff)  = unique(data_filtered$Group)
+
+
+# miss <-  data.frame(Group = c("NTC", "Ugcg"), Missing = colSums(is.na(data_new)), Freq = c(table(dff$NTC), table(dff$Ugcg)))
+
+dff2 <- data.frame(Protein = rownames(dff), NTC = dff$NTC, Ugcg = dff$Ugcg)
+
+dff3 <- dff2 %>% group_by(Protein) %>% summarize(missing_NTC = sum(is.na(NTC)), missing_Ugcg = sum(is.na(Ugcg)))
+
+# dff3 %>% filter(missing_NTC > 0 | missing_Ugcg > 0)
+
+dff3_melted <- reshape2::melt(dff3, id.var = "Protein", value.name = "Total Missingness", variable.name = "Group")
+
+
+
+na_plot3 <- (data.frame(Protein = rownames(as.data.frame(missing_percentage)),missing_percentage)) %>% filter(missing_percentage < 30 & missing_percentage > 0) %>% ggplot() + geom_bar(aes(Protein, missing_percentage), stat = "identity") + coord_flip() + ylab("% Missing Data") + ggtitle("Proteins with 0-30% Missing Data - to be imputed")
+
+ggplotly(na_plot3)
+## we should add a heatmap of the PG.Genes in rm object to see missingness by group 
+
+mz = data_new[, colnames(data_new) %in% names(rm)]
+
+```
+
+### Are proteins with missing values often lower intensities?
+
+Below we plot the cumulative density of protein measures by those that had missing data and those that did not have any. We observe what seems to be a bimodal distribution for proteins with missing data and see that proteins with no missing data don't have symmetric distribution. There's a long left-handed tail and the center is shifted to the right of what we'd expect.
+
+
+```{r 'lower_intensity_miss', cache = T}
+ms <- (data.frame(Protein = rownames(as.data.frame(missing_percentage)),missing_percentage))
+# ms = data.frame(Protein = rownames(dff) , Missing = as.numeric(I(rowSums(dff) > 0))) ## count missing values
+
+met.w = reshape2::melt(data_new, id.vars=c("Sample", "Group")) ## melt df 
+
+colnames(met.w) = c("ID", "Group", "Protein","Value")
+ms = merge(met.w, ms, by="Protein")
+ms$Value = as.numeric(ms$Value)
+ms$Value[ms$Value == 0 ] = NA
+ms$Missing = ifelse(ms$missing_percentage>0,"Missing","None Missing")
+
+ggplot(data = na.omit(ms),aes(x=log2(Value),color=Missing)) + 
+  geom_density() + 
+  theme_classic() + 
+  xlab("Log2 transformed protein abundance") + 
+  labs(caption = "") 
+
+```
+
+
+
+
+```{r 'density_across_samples', cache = T}
+# protein abundance by sample
+msq = ms
+msq$Genotype = ms$Group 
+# msq$Genotype = gsub("[0-9]|\\_", "", msq$Genotype) 
+# 
+# ggplot(data = na.omit(msq),aes(x=log2(Value), group = ID, color=Genotype)) + 
+#   geom_density() + 
+#   theme_classic() + 
+#   xlab("Log2 transformed protein abundance") + 
+#   labs() + 
+#   facet_wrap(~Genotype)
+
+ggplot(data = na.omit(msq),aes(x=log2(Value), group = ID, color=Genotype)) + 
+  geom_density() + 
+  theme_classic() + 
+  xlab("Log2 transformed protein abundance") + 
+  labs() 
+
+b4 = ggplot(data = na.omit(msq),aes(x=log2(Value), group = ID, color=Genotype)) + 
+  geom_density() + 
+  theme_classic() + 
+  xlab("Values before Imputation") + 
+  labs()
+```
+
+
+
+```{r eval = FALSE, include = FALSE, fig.width= 7, fig.height=4}
+# protein missingess
+prot_miss <- data.frame(ttl_miss = colSums(is.na(data_new)[,3:ncol(data_new)]))
+prot_miss$Protein <- rownames(prot_miss)
+
+prot_miss <- prot_miss[order(prot_miss$ttl_miss, decreasing = TRUE), ]
+order <- prot_miss$Protein
+prot_miss$Protein <- factor(prot_miss$Protein, levels = order)
+
+na_plot4 <- prot_miss %>% filter(ttl_miss > 0) %>% 
+  ggplot() + 
+  geom_bar(aes(x = Protein, y = ttl_miss), stat = "identity") + coord_flip() + ggtitle("Proteins with Missingness") + theme_bw() + xlab("Number of missing values")
+
+ggplotly(na_plot4)
+```
+
+
+### Log2 vs. VSN transformations
+
+VSN doesn't greatly improve the distribution, so we'll skip that and stick to log2 transformations. 
+
+```{r 'VSN vs. Log2', cache = T, full_width = T, fig.width=15, fig.height=7, message = F, warning = F}
+# normalize VSN
+
+data_new[data_new == 0]<-NA
+data_norm = data_new # just a second version of data_new that can be transformed
+
+data_new[,3:ncol(data_new)] = log2(data_new[,3:ncol(data_new)])
+
+metab.m = reshape2::melt(data_new, id.vars=c(colnames(data_new)[1:2]))
+
+
+a = ggplot(metab.m, aes(x=Sample,y=value, color =Group )) + 
+  geom_boxplot() + 
+  coord_flip() + 
+  theme_classic() + 
+  ggtitle("Log2 Abundance Values before VSN") 
+
+
+set.seed(777)
+
+# VSN version
+normies = as.data.frame(t(normalizeVSN(t(data_norm[,3:ncol(data_norm)] ))))
+
+normies$Sample <- data_new$Sample
+normies$Group <- data_new$Group
+normies <- normies %>% relocate(Sample)
+
+normies2 = reshape2::melt(normies, id.vars= c("Sample", "Group") )
+
+# log2 transformed data
+data_norm[,3:ncol(data_norm)] = log2(data_norm[,3:ncol(data_norm)])
+ 
+metab.m = reshape2::melt(data_norm, id.vars= c(colnames(data_norm)[1:2] ))
+
+## now metab.m represents a melted, log2 normalized df 
+# this part is redundant 
+
+# ggplot(na.omit(metab.m), aes(x=ID, y=value, color =Group )) +
+#   geom_boxplot() + 
+#   coord_flip()+
+#   theme_classic() + 
+#   ggtitle("Abundance Values after VSN") 
+
+b = ggplot(na.omit(normies2), aes(x=Sample, y=value, color =Group )) +
+  geom_boxplot() + 
+  coord_flip()+
+  theme_classic() + 
+  ggtitle("Abundance Values after VSN") 
+
+a + b 
+
+
+```
+
+
+
+
+### Impute
+
+We need to impute since there are a few proteins with 0-30% missingness 
+
+We will impute the missing values from a truncated distribution with parameters estimated using quantile regression. Plots are in order: cumulative intensity distributions prior to imputation, after imputation, and the amount of missingness per mouse (now none)
+
+
+```{r 'after_imp_density', cache = T, fig.width=8, fig.height=3, message=FALSE, warning=FALSE}
+
+# ggplot(na.omit(metab.ni) ,aes(x=value,color = Group )) + geom_density()+ theme_classic() + labs(caption = "Values Before Imputation")
+
+set.seed(777)
+
+# this should use log2 transformed values since VSN wasn't very useful
+
+data_norm[,3:length(data_norm)] = impute.QRILC(data_norm[,3:length(data_norm)], tune.sigma = 1)[[1]]
+
+metab.imp = reshape2::melt(data_norm,id.vars=c(colnames(data_norm)[1:2])) # now metab.m represents normalized, imputed values 
+
+b4 <- ggplot(metab.m, aes(x=value, group = Sample, color = Group )) + 
+  geom_density() + 
+  theme_classic() + ggtitle("Values after Log2")
+
+after = ggplot(metab.imp,aes(x=value, group = Sample, color = Group )) +
+  geom_density() + 
+  theme_classic() + 
+  labs(title = "Values after Log2 + Imputation") 
+
+b4 + after 
+
+
+metabs = data.frame( Sample=data_norm$Sample, Group = data_norm$Group, count = unlist(lapply(1:nrow(data_norm[,3:length(data_norm)]), function(x) 
+sum(data_norm[x,3:length(data_norm)]> 0) )))
+
+# metabs$ID = gsub("^\\[[0-9]+\\] ", "" , metabs$ID)
+
+# ggplot(metabs,aes(x=ID,y=count,fill=Group)) + 
+#   geom_bar(stat="identity") +
+#   scale_y_continuous(expand=c(0,0)) +
+#   scale_fill_manual(values=viridis::viridis(4)[1:3] ) +
+#   theme_classic() +
+#   theme(axis.text.x=element_text(angle=45,hjust=1))
+
+after_imp <- ggplot(metabs,aes(x=Sample,y=count,fill=Group)) + geom_bar(stat="identity")+theme_classic() +
+  scale_y_continuous(expand=c(0,0)) +
+  scale_fill_manual(values=viridis::viridis(8)[1:8] ) +
+  theme_classic() +
+  theme(axis.text.x=element_text(angle=45,hjust=1)) + 
+  ggtitle("Confirming that there are no missing values after imputation") 
+
+ggplotly(after_imp)
+
+# sum(is.na(metabs)) # another sanity check here too
+# (sum(metabs == 0))
+```
+
+
+## Data visualization {.tabset}
+
+### PCA plot of the groups 
+
+PCA on log2 and imputed data. Note the stark split in controls vs. Ugcg groups. This highlights differences across groups.
+
+```{r 'pca', cache = T}
+
+
+res.pca <- prcomp(data_norm[,3:ncol(data_norm)],  scale = TRUE)
+
+# fviz_eig(res.pca)
+
+#fviz_pca_var(res.pca,axes = c(3,4),select.var = list(cos2 = 4))
+
+df = data.frame(res.pca$x)
+df$Group =data_norm$Group
+df$Sample = data_norm$Sample
+# df$ID = gsub("^\\[[0-9]+\\] ", "" , df$ID)
+# df$ID = substr(df$ID, start = 1, stop =4) 
+# library(ggforce) 
+
+
+pca1 <- ggplot(df,aes(x=PC1, y=PC2, color=Group,label=Sample)) + 
+  geom_text() +
+  theme_classic()+
+  scale_color_manual(values=viridis::viridis(8)[c(1, 3, 5, 7)] ) +
+  xlab("PC1 (58.9%)") + ylab("PC2 (15.5%)")
+
+
+pca2 <- ggplot(df,aes(x=PC2, y=PC3, color=Group, label=Sample)) + 
+  geom_text() +
+  theme_classic() +
+  scale_color_manual(values=viridis::viridis(8)[c(1, 3, 5, 7)] ) +
+  xlab("PC2 (15.5%)") + ylab("PC3 (8%)")
+
+pca3 <- ggplot(df,aes(x=PC3, y=PC4, color=Group, label=Sample)) + 
+  geom_text() +
+  theme_classic() +
+  scale_color_manual(values=viridis::viridis(8)[c(1, 3, 5, 7)] ) +
+  xlab("PC3 (8%)") + ylab("PC4 (5.6%)")
+
+
+pca1;pca2;pca3
+# wrap_plots(pca1,pca2,pca3, ncol = 1)
+# ggplot(df,aes(x=PC5, y=PC6, color=Group,label=Sample)) + geom_text() +
+#   theme_classic() +
+#   scale_color_manual(values=viridis::viridis(8)[c(1, 3, 5, 7)] ) +
+#   xlab("") + ylab("")
+# 
+
+# fviz_pca_ind(res.pca, label="none", habillage=data_norm$Group,
+#              addEllipses=TRUE, ellipse.level=0.95, axes = c(1,2))
+
+```
+
+
+### Heatmap
+
+HM of Normalized&Imputed Values  
+
+```{r 'norm_imp_HM', cache=TRUE}
+# metab.ni$ID = gsub("^\\[[0-9]+\\] ", "" , metab.ni$ID)
+
+heat.df = t(data_norm[,3:ncol(data_norm)])
+rownames(heat.df)=NULL
+
+temp = data.frame(Group = data_norm$Group)
+# heat.df[heat.df == 0] = NA
+
+# colnames(heat.df) = make.unique(paste0(metab.ni$ID,metab.ni$Group))
+
+colnames(heat.df) = data_norm$Sample
+rownames(temp) = colnames(heat.df)
+
+pheatmap(heat.df,scale="row", annotation_col =  temp,color=colorRampPalette(c("navy", "white", "red"))(50),annotation_colors = anno_colors)
+
+pheatmap(heat.df,scale="row", annotation_col =  temp, color=colorRampPalette(c("navy", "white", "red"))(50), annotation_colors = anno_colors, cluster_rows = FALSE, cluster_cols = FALSE)
+
+
+```
+
+
+
+```{r}
+
+tm = data_norm
+
+ids = data_norm[, 1:2]
+tm = t(tm[, 3:length(tm)])
+
+tm = as.data.frame(tm)
+
+colnames(tm) <- data_norm$Sample
+
+Group = data_norm$Group
+ID = factor(sub("^[^_]*_", "", data_norm$Sample))
+melt(tm)
+```
+
+### Raw Values Across Groups
+
+intercept only model on deltas 
+
+
+```{r 'raw_plots_top_genes',cache = T,  fig.height=8,full_width = T}
+
+targets = data.frame("Group" = Group, "Blocks" = ID) 
+
+design = model.matrix(~ 0 + Group, data= tm)
+corfit <- duplicateCorrelation(tm, design, block = targets$Blocks)
+
+fit <- lmFit(tm, design, block = targets$Block, correlation=corfit$consensus, robust = FALSE)
+
+cont2 = makeContrasts(Ugcg_vs_NTC = GroupUgcg - GroupNTC,
+                      levels = design)
+
+set.seed(777)
+
+fit.ucgc <- contrasts.fit(fit, contrasts = cont2[, 1]) 
+
+
+set.seed(777)
+
+ebayesf <- eBayes(fit.ucgc, robust = T, trend = T)
+
+
+tops = topTable(ebayesf, adjust.method = "BH", p.value = 1, number = 1000000)
+
+# top = topTable(res, adjust.method = "BH", p.value = 1, number = 1000000) 
+
+
+dntest = rownames(head(tops, 12))
+
+dntest = tm[rownames(tm) %in% dntest, ]
+dntest2 = t(dntest) 
+dntest2 = as.data.frame(dntest2) 
+dntest2$id = rownames(dntest2) 
+
+dntest2 = dntest2 %>%
+  tidyr::gather(variable, value, -id) 
+
+dntest2$group = sub("*_.", "", dntest2$id)
+dntest2$Blocks <- gsub(".*_", "", dntest2$id)
+
+plo = ggplot(dntest2, aes(x = id, y = value, color = group, shape = Blocks, group = id)) + geom_point()  + facet_wrap(~ variable, scales = "free", ncol = 4) + labs(title = "Raw values of the top 6 DE proteins from limma") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) + ylab("Log2 Raw Values")
+plo
+
+
+
+
+
+```
+
+```{r}
+
+ps = as.data.frame(ebayesf$p.value)
+
+top <- tops
+top$Gene.ID = rownames(top) 
+top$Sig = ifelse(top$adj.P.Val < 0.05, "FDR", "NS")
+top$Sig = factor(top$Sig, levels=c("NS","FDR"))
+top$Gene = gsub(".*_", "", rownames(top) )
+# rownames(top) <- NULL
+
+# this was switched to just grab the top 10 genes
+of.interest = top$Gene.ID[1:10]
+
+# top[top$Gene %in% of.interest, ]
+
+top$Label = rep("") 
+top$Label = ifelse(top$Gene.ID %in% of.interest, top$Gene, "")
+
+top$sz <- case_when(top$Sig == "FDR" ~ "3", top$Sig == "NS"~ "1") 
+top$sz <- as.numeric(top$sz) 
+
+colorset = c('FDR'='red','NS'='black')
+
+volc_plot <- ggplot(top,aes(x=logFC,y= -log10(adj.P.Val), color = Sig)) +
+  geom_point(aes(size = sz > 1)) +
+    scale_size_manual(values = c(1,2), guide = "none") +
+    xlab("Log2 Fold-Change") +
+    theme(title = element_text(size = 14)) +
+  theme(legend.position = 'right', plot.title = element_text(size = 11, face = "bold")) +
+  ggrepel::geom_text_repel(data = top[top$Label != "", ], aes(label= Label),show.legend=F, box.padding = 6, point.padding = 0.2, max.overlaps = Inf, direction = "x")  +
+  scale_color_manual(values = colorset) +
+  guides(label ="none",text="none") + 
+    scale_x_continuous(limits = c(-12, 13)) + ggtitle("Top Proteins Abundance", subtitle = "Comparison: Ugcg vs. NTC")
+
+# saveRDS(top, "../Data/top_proteins.rds")
+# write.csv(top, file = "../Data/top_proteins.csv")
+
+```
+
+
+
+
+
+```{r warning = FALSE}
+library(sgpv)
+SE <- sqrt(ebayesf$s2.post) * ebayesf$stdev.unscaled
+mu <- ebayesf$coefficients
+
+t_0.975  <- qt(0.975,df=ebayesf$df.total)
+
+CIs <- data.frame(Lower = mu - SE*t_0.975, Upper = mu + SE*t_0.975)
+CIs <- CIs %>% mutate(Gene = sub(".*_", "", rownames(CIs)), Gene.ID = rownames(CIs))
+# CIs <- CIs[!duplicated(CIs$Genes),]
+
+CIs$SGPV <- sgpvalue(CIs$Lower, CIs$Upper, log(0.75), log(1.25))$p.delta
+
+CIs <- CIs %>% dplyr::select(Gene, Gene.ID, SGPV)
+
+total_top <- merge(top, CIs, by = "Gene.ID")
+total_top <- total_top %>% relocate(Gene.ID, logFC, P.Value, adj.P.Val, SGPV)
+
+total_top[total_top$SGPV == 0,] # see how many 0s we get
+# send sgpv results
+# re-run GSEA next week with updated sgpv rankings
+# change 0s to super tiny number 
+
+saveRDS(total_top, file = "../Data/total_top.rds")
+# colnames(total_top)[1:5]
+# total_top %>% filter(Gene.x == "Parp9") # Now we fixed this!
+
+```
+
+
+
+```{r message=FALSE, warning=FALSE}
+library(knitr)
+library(kableExtra)
+top_proteins <- tops %>% transmute(Gene = sub(".*_", "\\2", rownames(tops)), logFC = logFC, adj.P.Val = adj.P.Val, P.Value = P.Value)
+
+top_tab <- top_proteins[1:15,] %>% kbl(row.names = F) %>% kable_styling(full_width = F) %>% row_spec(c(1,2), color = "red")
+
+
+# saveRDS(top_proteins, "top_proteins.rds")
+```
+
+## Volcano Plot & Top Proteins Table
+
+<div class = "row">
+<div class = "col-md-6">
+
+```{r 'Volc_plot-OG', echo = F, fig.height=6, warning = F}
+volc_plot
+```
+
+</div>
+
+<div class = "col-md-4">
+```{r 'top_tab', echo = F, message = F, warning = F}
+top_tab
+```
+
+</div>
+</div>
+
+
+## Volcano Plot with raw p-values
+
+```{r}
+
+```
+
+
+```{r 'volc_raw_pvalue005', full_width = F, fig.width=8, fig.height=5, cache = T}
+# RAW P-VALUE CUTOFFS 0.05
+ps = as.data.frame(ebayesf$p.value)
+
+top <- tops
+top$Gene.ID = rownames(top) 
+top$Sig = ifelse(top$P.Value < 0.05 & top$P.Value > 0.01, "Sig.", "NS")
+top$Sig = factor(top$Sig, levels=c("NS","Sig."))
+top$Gene = gsub(".*_", "", rownames(top) )
+# rownames(top) <- NULL
+
+# this was switched to just grab the top 10 genes
+of.interest = top$Gene.ID[top$P.Value < 0.05 & top$P.Value > 0.01][1:20]
+
+
+top$Label = rep("") 
+top$Label = ifelse(top$Gene.ID %in% of.interest, top$Gene, "")
+
+top$sz <- case_when(top$Sig == "Sig." ~ "1", top$Sig == "NS"~ "0.5") 
+top$sz <- as.numeric(top$sz) 
+
+colorset = c('Sig.'='red','NS'='black')
+
+footnote <- "Note that this plot labels p-values significant at 0.01 < p < 0.05."
+
+volc_0.05 <- ggplot(top,aes(x=logFC,y= -log10(P.Value), color = Sig)) +
+  geom_point(aes(size = sz > 1)) +
+    scale_size_manual(values = c(1,2), guide = "none") +
+    xlab("Log2 Fold-Change") +
+    theme(title = element_text(size = 14)) +
+  theme(legend.position = 'right', plot.title = element_text(size = 11, face = "bold"),plot.caption = element_text(hjust = 0)) +
+  ggrepel::geom_text_repel(data = top[top$Label != "", ], aes(label= Label),show.legend=F, box.padding = 2, point.padding = 0.2, max.overlaps = Inf, direction = "both", min.segment.length = 0.1)  +
+  scale_color_manual(values = colorset) +
+  guides(label ="none",text="none") + 
+    scale_x_continuous(limits = c(-12, 13)) + ggtitle("Top Proteins Abundance", subtitle = "Comparison: Ugcg vs. NTC \nRAW P-VALUES (sig. level < 0.05)") + labs(caption = footnote)
+
+volc_0.05
+# saveRDS(volc_0.05, file = "volc_0.05.rds")
+# write.csv(top, file = "top_proteins.csv")
+
+# top %>% filter(P.Value < 0.05 & P.Value > 0.01) # 241 proteins
+```
+
+
+```{r}
+top_0.05 <- top  %>%  filter(P.Value < 0.05 & P.Value > 0.01)
+
+top_tab_0.05 <- top_0.05[1:20,] %>% dplyr::select(Label, logFC,P.Value, adj.P.Val) %>% kbl(caption = "Top Genes (0.01 < p < 0.05)", row.names = F) %>% kable_styling()  %>% scroll_box(width = "500px", height = "300px")
+
+# saveRDS(top_tab_0.05, file = "top_tab_0.05.rds")
+```
+
+
+
+```{r 'volc_raw_pvalue001', full_width = F, fig.width=8, fig.height=5}
+# RAW P-VALUE CUTOFFS 0.051
+ps = as.data.frame(ebayesf$p.value)
+
+top <- tops
+top$Gene.ID = rownames(top) 
+top$Sig = ifelse(top$P.Value < 0.01, "Sig.", "NS")
+top$Sig = factor(top$Sig, levels=c("NS","Sig."))
+top$Gene = gsub(".*_", "", rownames(top) )
+# rownames(top) <- NULL
+
+# this was switched to just grab the top 10 genes
+of.interest = top$Gene.ID[top$P.Value < 0.01][1:25]
+
+# top[top$Gene %in% of.interest, ]
+
+top$Label = rep("") 
+top$Label = ifelse(top$Gene.ID %in% of.interest, top$Gene, "")
+
+top$sz <- case_when(top$Sig == "Sig." ~ "2", top$Sig == "NS"~ "1") 
+top$sz <- as.numeric(top$sz) 
+
+colorset = c('Sig.'='red','NS'='black')
+
+volc_0.01 <- ggplot(top,aes(x=logFC,y= -log10(P.Value), color = Sig)) +
+  geom_point(aes(size = sz > 1)) +
+    scale_size_manual(values = c(1,2), guide = "none") +
+    xlab("Log2 Fold-Change") +
+    theme(title = element_text(size = 14)) +
+  theme(legend.position = 'right', plot.title = element_text(size = 11, face = "bold")) +
+  ggrepel::geom_text_repel(data = top[top$Label != "", ], aes(label= Label),show.legend=F, box.padding = 4, point.padding = 0.2, max.overlaps = Inf, direction = "both")  +
+  scale_color_manual(values = colorset) +
+  guides(label ="none",text="none") + 
+    scale_x_continuous(limits = c(-12, 13)) + ggtitle("Top Proteins Abundance", subtitle = "Comparison: Ugcg vs. NTC \nRAW P-VALUES (sig. level < 0.01)")
+
+volc_0.01
+
+
+top_0.01 <- top  %>%  filter(P.Value < 0.01)
+
+top_tab_0.01 <- top_0.01[1:20,] %>% dplyr::select(Label, logFC,P.Value, adj.P.Val) %>% kbl(caption = "Top Genes (p < 0.01)", row.names = F) %>% kable_styling()  %>% scroll_box(width = "500px", height = "300px")
+
+# saveRDS(top_tab_0.01, file = "top_tab_0.01.rds")
+
+# saveRDS(volc_0.01, file = "volc_0.01.rds")
+# write.csv(top, file = "top_proteins.csv")
+
+# top %>% filter(P.Value < 0.01) 
+```
+
+
+```{r}
+sessionInfo()
+```
+
