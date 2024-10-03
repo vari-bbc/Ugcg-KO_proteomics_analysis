@@ -1,0 +1,434 @@
+---
+title: "Global GSEA Results"
+author: "Hannah Damico"
+date: '`r Sys.Date()`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+options(bitmapType = "cairo", scipen = 9999)
+library(tidyverse)
+library(BiocManager)
+library(statmod)
+library(DataExplorer)
+library(stringr)
+library(ggprism)
+library(plotly)
+library(knitr)
+library(DT)
+library(readr)
+library(limma)
+library(reshape2)
+library(pheatmap)
+library(patchwork)
+library(msigdbr)
+library(readxl)
+library(knitr)
+library(kableExtra)
+library(sgpv)
+library(plotly)
+
+# these have to be installed before you can use the imputeLCMD package
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install(c("pcaMethods", "impute", "org.Mm.eg.db", "clusterProfiler", "pairwise_termsim"))
+
+library(impute)
+library(pcaMethods)
+library(imputeLCMD)
+library(clusterProfiler)
+library(enrichplot)
+library(org.Mm.eg.db)
+library(DOSE)
+
+top_proteins <- readRDS(here::here("Data/top_proteins.rds"))
+set.seed(1234)
+```
+
+
+
+#  {.tabset}
+
+Using second generation p-values, we observe a greater number of significant genes since we are not using such conservative methods as compared to BH FDR corrections. When using SGPVs, 0 indicates significant difference and 1 indicates equivalence. The following paper describes SGPVs more:  
+
+[Second-generation p-values: improved rigor, reproducibility, & transparency in	
+statistical	analyses](https://arxiv.org/pdf/1709.09333.pdf)
+
+
+## gseGO & gseMKEGG {.tabset}
+After adjusting for false positives, we found no gene enrichments. It is likely that we are not well powered enough to detect these enrichments. 
+
+```{r}
+df = top_proteins[!duplicated(top_proteins$Gene),]
+df$logFC_T  <- -log10(df$P.Value)*sign(df$logFC) # this is Kin's preferred way of ordering genes
+
+# transformed version
+# we want the log2 fold change 
+original_gene_listT <- df$logFC_T
+
+# name the vector
+names(original_gene_listT) <- df$Gene
+
+# omit any NA values 
+gene_listT<-na.omit(original_gene_listT)
+
+# sort the list in decreasing order (required for clusterProfiler)
+gene_listT = sort(gene_listT, decreasing = TRUE)
+
+# normal logFC
+# we want the log2 fold change 
+original_gene_list <- df$logFC
+
+# name the vector
+names(original_gene_list) <- df$Gene
+
+# omit any NA values 
+gene_list<-na.omit(original_gene_list)
+
+# sort the list in decreasing order (required for clusterProfiler)
+gene_list = sort(gene_list, decreasing = TRUE)
+
+
+
+```
+
+### gseGO Dotplot
+
+Ontology =  BP, CC, MF  
+
+```{r eval = T, warning = FALSE, message=FALSE, fig.height=20, fig.width=12}
+# other method
+# reading in data from deseq2
+
+set.seed(1234)
+
+gse <- gseGO(geneList=gene_listT, 
+             ont ="ALL", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             eps = 0, 
+             verbose = TRUE, 
+             OrgDb = org.Mm.eg.db::org.Mm.eg.db, 
+             pAdjustMethod = "BH") # keep BH to adjust for false positives
+
+symbols <- mapIds(org.Mm.eg.db::org.Mm.eg.db, keys = names(gene_listT), keytype = "SYMBOL", column="ENTREZID")
+
+# gene_kegg <- gene_list
+# names(gene_kegg) <- symbols
+# 
+# gse_KEGG <- gseMKEGG(geneList=na.omit(gene_kegg), 
+#              organism = "mmu",
+#              keyType = "ncbi-geneid", 
+#              minGSSize = 3, 
+#              maxGSSize = 800, 
+#              pvalueCutoff = 0.05, 
+#              verbose = TRUE,
+#              pAdjustMethod = "BH") 
+
+# ont = biological processes
+# celullar component, MF = molecular function - 
+
+
+require(DOSE)
+dotplot(gse, showCategory=500, split=".sign") + facet_grid(.~.sign)
+
+sv <- dotplot(gse, showCategory=1000, split=".sign")[1]
+
+
+# save gseGO object
+saveRDS(gse, "../Data/gseGO.rds")
+```
+
+```{r}
+data.frame(gse$Description, gse$ONTOLOGY) %>% filter(gse.Description == "actin catabolic membrane interferon-alpha")
+```
+
+
+### GO Enrichment Scores
+
+```{r 'enrichement_scores', cache = T, results='asis'}
+enrichment_scores <- data.frame(ID = gse$ID, EnrichmentScore = gse$enrichmentScore) %>%  
+           mutate(Direction = factor(case_when(EnrichmentScore > 0 & abs(EnrichmentScore) > 0 ~ "Activated in KOs",
+                                 EnrichmentScore < 0 & abs(EnrichmentScore) > 0 ~ "Surpressed in KOs"), 
+                                 levels = c("Surpressed in KOs", "Activated in KOs")))
+
+enrichment_scores <- enrichment_scores %>% group_by(Direction) %>% arrange(EnrichmentScore)
+
+table(enrichment_scores$Direction)
+
+
+enrichment_scores %>% kbl(full_width = F)  %>% kable_styling() %>% pack_rows("Surpressed in KOs", 1,54) %>% pack_rows("Activated in KOs", 55, nrow(enrichment_scores)) %>% scroll_box(height = "600px", width = "800px")
+```
+
+
+### Enriched GO Pathways
+
+```{r results='asis'}
+library(data.table)
+ME <- lapply(gse$core_enrichment, function(x){unlist(strsplit(gsub("*/", " ", x), " "))})
+names(ME) <- gse$ID
+
+
+## work as of 10/01
+core_genes <- lapply(gse$core_enrichment, function(x){
+  genes <- unlist(strsplit(gsub("*/", " ", x), " "))
+  df <- data.frame(genes)
+  return(df)
+  })
+
+names(core_genes) <- gse$Description
+
+core_genes_df <- rbindlist(core_genes, idcol="pathway")
+
+NES <- lapply(c(gse$NES), function(NES){
+  df <- data.frame(NES = NES)
+return(df)
+})
+names(NES) <- gse$Description
+NES_df <- rbindlist(NES, idcol = "pathway") 
+
+pvalue <- lapply(c(gse$pvalue), function(pvalue){
+  df <- data.frame(pvalue = pvalue)
+return(df)
+})
+names(pvalue) <- gse$Description
+pvalue_df <- rbindlist(pvalue, idcol = "pathway") 
+
+
+p.adjust <- lapply(c(gse$p.adjust), function(padj){
+  df <- data.frame(p.adjust = padj)
+return(df)
+})
+names(p.adjust) <- gse$Description
+p.adjust_df <- rbindlist(p.adjust, idcol = "pathway") 
+
+goIDs <- lapply(c(gse$ID), function(ID){
+  df <- data.frame(ID = ID)
+return(df)
+})
+names(goIDs) <- gse$Description
+ID_df <- rbindlist(goIDs, idcol = "pathway") 
+
+
+
+GO_df <- merge(merge(pvalue_df, p.adjust_df, by = c("pathway")),merge(NES_df, core_genes_df, by = "pathway"), by = "pathway") %>% relocate(genes)
+
+GO_df_final <- merge(GO_df, ID_df, by = "pathway") %>% relocate(ID, pathway, genes, NES)
+# write.csv(GO_df_final, "Data-20241001//GO_pathway_genes_20241001.csv", row.names = F)
+```
+
+```{r}
+
+#lapply(ME, head)
+your_list <- lapply(ME, function(x) purrr::map_chr(x, as.character))
+
+# Convert list to data frame
+df <- data.frame(
+  Element = names(your_list),
+  Items = I(your_list),
+  stringsAsFactors = FALSE
+)
+
+df_ME <- data.frame(do.call(cbind, ME))
+
+df_ME_melted <- pivot_longer(df_ME, cols = colnames(df_ME), names_to = "Pathway", values_to = "Genes")
+# saveRDS(df_ME_melted, "../Data/df_ME_melted.rds")
+# df_ME_melted  %>% group_by(Pathway) %>% count
+# a file that summarizes the genes that make up each GO term/pathway in the averaged NES analysis
+# df_ME %>% kbl(caption = "Enriched GO Pathways") %>% kable_styling()  %>% scroll_box(width = "800px", height = "600px")
+df_ME_melted  %>% group_by(Pathway) %>% arrange(Pathway)
+```
+
+
+```{r 'enriched_go_pathways', cache = T, }
+library(Hmisc)
+EP <- data.frame(ID = gse$ID, Description = gse$Description, adj.P.Value = gse$p.adjust)
+EP %>% filter(adj.P.Value < 0.0005) %>% kbl(caption = "Enriched GO Pathways") %>% kable_styling()  %>% scroll_box(width = "800px", height = "600px")
+
+# Hmisc::label(sv$data$Description) <- sv$data$ID
+
+#  %>% rename("raw_pvalue" = "pvalue") 
+sv_tab <- sv$data %>% dplyr::select(ID, Description,pvalue, p.adjust, enrichmentScore)%>% kbl(caption = "Enriched GO Pathways") %>% kable_styling()  %>% scroll_box(width = "800px", height = "900px")
+
+sv_data <- sv$data
+
+
+# saveRDS(sv_data, file = "sv_data.rds")
+# write.csv(sv$data[!colnames(sv$data) %in% c("rank", "leading_edge", "core_enrichment", "x")], file = "all_enriched_pathways.csv")
+```
+
+
+
+```{r}
+ME <- lapply(gse$core_enrichment[gse$ID %in% sv$data$ID], function(x){unlist(strsplit(gsub("*/", " ", x), " "))})
+
+names(ME) <- gse$Description[gse$ID %in% sv$data$ID]
+
+#lapply(ME, head)
+df_ME <- data.frame(do.call(cbind, ME))
+# create RDS of this!
+saveRDS(df_ME, "../Data/df_ME.rds")
+
+df_ME_melted <- pivot_longer(df_ME, cols = colnames(df_ME), names_to = "Pathway", values_to = "Genes")
+# df_ME_melted  %>% group_by(Pathway)
+
+gene_tab <- df_ME %>% kbl(caption = "Enriched GO Pathways") %>% kable_styling()  %>% scroll_box(width = "1000px", height = "600px")
+gene_tab2 <- df_ME
+# saveRDS(gene_tab, file = "gene_tab.rds")
+write.csv(gene_tab2, "../Data/all_enriched_pathway_genes_20241001.csv")
+```
+
+
+
+```{r 'dotplot_all', cache = T, fig.height=65, fig.width=15, full_width = T }
+set.seed(1234)
+dp_all <- dotplot(gse, showCategory=100, split=".sign")
+dp_all + ggtitle("All Pathways - gseGO")
+
+
+# saveRDS(dp_all, "dp_all.rds")
+# ggsave("dp_all.jpeg", dp_all, height = 65, width = 15, limitsize = FALSE)
+```
+
+
+```{r 'dotplot_0.0004', cache = T, fig.height=18, fig.width=16, full_width = T}
+
+
+library("tidytree")
+library("treeio")
+#library("ggtreeExtra")
+# sessionInfo()
+# ggtreeExtra_1.12.0     treeio_1.26.0          tidytree_0.4.6   
+set.seed(1234)
+edox2 <- pairwise_termsim(gse)
+p1 <- treeplot(edox2, cluster.params = list(n = 6)) + ggtitle("Highly significant genes - p < 0.0004") # default clustering method is ward.D
+# saveRDS(p1, "tree_wardD.rds")
+p2 <- treeplot(edox2, cluster.params = list(method = "average", n = 6))
+# saveRDS(p2, "tree_avg.rds")
+# aplot::plot_list(p1, tag_levels='A')
+
+```
+
+
+
+
+
+
+```{r 'dotplot_0.05', cache = T, fig.height=20, fig.width=16, full_width = T}
+# dendrogram showing p < 0.05
+set.seed(1234)
+tp.0.05 <- treeplot(edox2, showCategory = 250, cluster.params = list(n = 9)) + ggtitle("Significant genes - p < 0.05") 
+tp.0.05
+# saveRDS(tp.0.05, "tp.0.05.rds")
+
+```
+
+
+```{r 'dotplot_0.01', cache = T, fig.height=18, fig.width=16, full_width = T}
+# dendrogram showing p < 0.01
+set.seed(1234)
+tp.0.01 <- treeplot(edox2, showCategory = 80,cluster.params = list(n = 9)) + ggtitle("Significant genes - p < 0.01") 
+tp.0.01
+# View(tp.0.01)
+# data.frame(tp.0.01$data) %>% group_by(group) %>% count()
+# grab cluster labels! order by y so they're in the correct order
+labs_clus <- ggplot_build((tp.0.01))$data[[3]] %>% arrange(desc(y))
+labs_clus <- labs_clus$label
+labs_clus <- gsub("\n", " ", labs_clus) # remove \n new line 
+```
+
+
+
+
+```{r }
+test <- data.frame(tp.0.01$data)
+# test <- test[order(test$y),]
+test <- na.omit(test)
+# unique(test$group)
+
+cluster_order <- test %>% arrange(desc(y))
+cluster_order <- unique(cluster_order$group)
+# weighted avg. of enrichment scores
+# saveRDS(tp.0.01, "tp.0.01.rds")
+# enrichment on the union of genes in sets
+
+paste(labs_clus, cluster_order)
+
+```
+
+
+```{r}
+# grab relevant columns
+cluster_genes <- function(cluster_name){
+  # grab label names from from cluster 1 and match to column names in df_ME that contains the genes
+  cluster_labels <- test$label[(test$group == cluster_name) & test$isTip == TRUE]
+  # need slight adjustments, add . instead of space, now they should match colnames of df_ME
+  cluster_labels <- gsub(" ", ".", cluster_labels)
+  # select labels for cluster 1 from df_ME
+  cluster_genes <- df_ME[colnames(df_ME) %in% cluster_labels]
+  # add intersection check 
+  
+  return(cluster_genes)
+    
+}
+
+
+# these are the cluster levels
+cls <- lapply(cluster_order, cluster_genes)
+names(cls) <- labs_clus
+
+find_union <- function(df) {
+  Reduce(union, df) # union, not intersection 
+}
+
+# avg. 
+
+# Apply the function to each dataframe in the list
+union_results <- lapply(cls, find_union)
+# now take these intersecting genes and perform a new enrichment as if they were custom lists
+
+
+# saveRDS(union_results, "union_results.rds")
+```
+
+
+function takes names of groups from group variable
+for every cluster, switch a space to a .
+check matching genes
+print out intersecting gene list
+
+
+```{r 'enrichment_score_plot', cache = T, fig.width=30, fig.height=30, full_width = T}
+temp <- sv$data
+ord <- temp %>% group_by(Description) %>% arrange(desc(enrichmentScore))
+temp$Description <- factor(temp$Description, levels = ord$Description)
+
+enrichment_score_plot <- temp %>% 
+  ggplot() + 
+  geom_point(aes(Description, enrichmentScore, color  = p.adjust)) + coord_flip() + ggtitle("Top Gene Enrichment Scores") + theme(plot.caption = element_text(hjust = 0)) + labs("Note that adj. p-value comes from gseaGO results.") + facet_grid(.~`.sign`)
+
+# saveRDS(enrichment_score_plot, "enrichment_score_plot.rds")
+ESP_plotly <- ggplotly(enrichment_score_plot, height = 1700, width = 1500)
+
+# saveRDS(ESP_plotly, "ESP_plotly.rds")
+```
+
+
+
+&nbsp;
+&nbsp;
+&nbsp;
+
+### Session Info
+
+```{r}
+sessionInfo()
+```
+
+
+a file that summarizes the genes that make up each GO term/pathway in the averaged NES analysis

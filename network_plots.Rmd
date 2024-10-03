@@ -1,0 +1,406 @@
+---
+title: "GSEA Visualizations"
+author: "Hannah Damico"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+options(bitmapType = "cairo")
+library(tidyverse)
+library(aPEAR)
+library(knitr)
+library(kableExtra)
+library(DOSE)
+library(tinytex)
+
+set.seed(1234)
+gseGO <- readRDS(("../Data/gseGO.rds"))
+path_n_genes <- readRDS(("../Data/df_ME.rds"))
+
+```
+
+
+# {.tabset}
+
+
+```{r fig.height=5, fig.width=7}
+# enrichment network plot
+set.seed(1234)
+enp <- enrichmentNetwork(gseGO@result, fontSize = 3, repelLabels = T)
+# enp
+
+```
+
+
+
+
+## Network Plot of Clustered Pathways
+
+```{r 'network_plot', cache = T, fig.height=8, fig.width=9, dev = "svg"}
+set.seed(1234)
+
+# Obtain clusters within the enriched pathways using default parameters
+data <- findPathClusters(gseGO@result)
+# Create the enrichment network visualization using default parameters
+network_plot <- plotPathClusters(gseGO@result, data$sim, data$clusters, repelLabels = TRUE, fontsize = 10)
+# Create the enrichment network visualization with repelled labels and elipses
+# plotPathClusters(gseGO@result, data$sim, data$clusters, repelLabels = TRUE, drawEllipses = TRUE)
+
+network_plot
+
+# saveRDS(network_plot, "network_plot.rds")
+```
+
+```{r}
+data_wide <- reshape2::dcast(data$clusters, Pathway ~ Cluster, value.var = "Pathway")
+data_wide <- data_wide %>% dplyr::select(-Pathway)
+
+
+
+
+# lapply(data_wide, table)
+
+for (col in names(df)) {
+  df[[col]] <- c(na.omit(df[[col]]), rep(NA, sum(is.na(df[[col]]))))
+}
+
+# data$clusters %>% group_by(Cluster) %>% count() %>% arrange(desc(n))
+
+sv_data <- readRDS("~/bbc-research/LONJ_20240208_Proteomics-VBCS1122/sv_data.rds")
+# create col named pathway to match cluster data
+sv_data$Pathway <- sv_data$Description
+
+# nework table data
+nt_data <- merge(sv_data, data$clusters, by = "Pathway")
+Col <- ifelse(nt_data$.sign == "activated", "darkgreen", "darkblue")
+
+# order the data
+nt_data <- nt_data %>% arrange(Cluster, desc(p.adjust))
+
+nt_data$Cluster <- factor(nt_data$Cluster, levels = unique(nt_data$Cluster))
+
+# check below validates code above
+# test <- nt_data %>% filter(Cluster == "lysosome")
+# mean(test$NES)/length(test$Cluster)
+
+```
+
+
+
+&nbsp;
+&nbsp;
+
+
+------------
+
+
+
+```{r}
+
+nt_data %>%  
+  dplyr::select(Pathway, Cluster, NES, pvalue, p.adjust, .sign) %>%
+  kbl(caption = "Pathways in clusters", escape = F) %>% 
+  kable_styling(full_width = F) %>% 
+  # pack_rows("protein-DNA complex organization", 1,12) %>% 
+  # pack_rows("defense response to other organism", 13, 53) %>% 
+  # pack_rows("side of membrane", 54,56) %>% 
+  # pack_rows("RNA splicing, via transesterification reactions", 57, 71) %>% 
+  # pack_rows("lysosome", 72, 75) %>% 
+  # pack_rows("translation at postsynapse", 76, 83) %>% 
+  # pack_rows("heterochromatic organization", 84, 88) %>% 
+  # pack_rows("translation regulator activity, nucleic acid binding", 89, 90) %>% 
+  # pack_rows("ubiquitin-dependent protein catabolic process", 91, 95) %>% 
+  # pack_rows("actin cytoskeleton organization", 96, 102) %>% 
+  # pack_rows("oxidoreductase activity, acting on the aldehyde or oxo group of donors", 103, 104) %>% 
+  # pack_rows("histone methylation", 105, 107) %>% 
+  # pack_rows("protein dealkylation", 108, 110) %>% 
+  # pack_rows("methylation-dependent protein binding", 111, 113) %>% 
+  # pack_rows("actin filament bundle assembly", 114,115) %>% 
+  # pack_rows("regulation of calcidiol 1-monooxygenase activity", 116, 119) %>% 
+  # pack_rows("positive regulation of leukocyte degranulation", 120, 122) %>% 
+  footnote(general = "NES corrects for differences in ES between gene-sets due to differences in gene-set sizes.") %>% 
+  add_footnote("Bader Lab Citation: https://www.baderlab.org/CancerStemCellProject/VeroniqueVoisin/AdditionalResources/GSEA", escape = F) %>% scroll_box(width = "800px", height = "600px") %>% 
+  column_spec(6, color = ifelse(nt_data$.sign == "activated", "darkgreen", "darkred"), bold = T)
+
+
+
+```
+
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
+## Average NES per Cluster 
+
+The average NES per cluster was found by simply calculating the mean of normalized enrichment scores for pathways in clusters. 
+
+Calculations for NES can be found here: https://www.gsea-msigdb.org/gsea/doc/GSEAUserGuideTEXT.htm (copy and paste link to web)
+
+&nbsp;
+&nbsp;
+
+-----
+
+&nbsp;
+&nbsp;
+
+
+```{r }
+# get weights from num genes in pathways
+# melted pathways and genes from gseGO results
+df_ME_melted <- readRDS(("../Data/df_ME_melted.rds"))
+
+selected_paths <- gsub(" ", ".", nt_data$Pathway) # from nt_data which is the gse data merged to get the network plot cluster assigns.
+
+# grab the pathways that we want
+wanted_pathways <- df_ME_melted %>% filter(Pathway %in% selected_paths)
+# get distinct genes in these pathways
+wanted_pathways <- wanted_pathways %>% group_by(Pathway) %>% distinct(Genes)
+# Find length of pathway and/or count number of distinct genes in pathway
+weight_df <- wanted_pathways %>% count(Pathway, name = "weight")
+# readRDS(here::here("total_top.rds"))
+```
+
+
+
+```{r}
+
+# create new nt_data to rename Pathways
+new_nt_data <- nt_data
+new_nt_data$Pathway <- gsub(" ", ".", nt_data$Pathway)
+
+# merged data has clusters + their pathways and weights
+distinct_pathways_OG <- merge(new_nt_data, weight_df, by = "Pathway") %>% dplyr::select(Pathway, Description, enrichmentScore, NES, pvalue, p.adjust, Count, .sign, Cluster, GeneRatio, weight)
+# next group by cluster and pathway, mulitipy NES by weight
+distinct_pathways <- distinct_pathways_OG %>% group_by(Cluster) %>% mutate(wtd_avg_NES = sum((NES * weight)/sum(weight)), avg_NES = mean(NES), max_NES = max(NES)) %>% relocate(NES, weight, wtd_avg_NES, avg_NES, max_NES, Pathway,Cluster) %>%  mutate(Color = case_when(.sign == "activated" ~ "darkgreen",  .sign == "suppressed" ~ "darkred"))
+
+# have to make sure that the col_spec is taking in the exact same order of the .sign labels in order to color properly
+dp_tab <- distinct_pathways %>%   distinct(Cluster, avg_NES, max_NES, .sign, Color) %>% arrange(desc(avg_NES)) 
+
+
+
+ dp_tab %>% 
+     distinct(Cluster, avg_NES, max_NES, .sign) %>% 
+  kbl(row.names = F) %>% 
+  kable_styling( full_width = F) %>% 
+  scroll_box(width = "600px", height = "500px") %>% 
+  column_spec(4, color = dp_tab$Color, bold = T)
+
+# sum(distinct_pathways$weight)
+# group by cluster
+# find sum of weighted NES by weight * NES within cluster
+# divided this by sum of weights (sum of counts)
+
+# below is just a check for this
+# count <- distinct_pathways[distinct_pathways$Cluster == "lysosome",]$Count
+# NES <- distinct_pathways[distinct_pathways$Cluster == "lysosome",]$NES
+# 
+# more checks bc I'm second guessing myself, but this is correct
+# tt <- distinct_pathways %>% filter(Cluster == "actin cytoskeleton organization") %>% dplyr::select(NES, weight, Pathway, Cluster, .sign)
+# tt
+# 
+# numerator <- NULL
+# denominator <- NULL
+# for (j in 1: nrow(tt)){
+#   numerator[j] <- tt$NES[j]*tt$weight[j]
+#   denominator[j] <- tt$weight[j]
+# }
+# 
+# sum(numerator)/sum(denominator)
+
+```
+
+-------
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
+```{r 'wtd_avg_NES', cache = T, fig.height=6, fig.width=12, include=F, eval = F}
+
+# weighted average of NES per cluster
+wtd_avg_nes <- distinct_pathways[order(-distinct_pathways$wtd_avg_NES), ]
+wtd_avg_nes$Cluster <- factor(wtd_avg_nes$Cluster, levels = unique(wtd_avg_nes$Cluster[order(-wtd_avg_nes$wtd_avg_NES) ]))
+wtd_avg_nes$Sign <- wtd_avg_nes$.sign
+labels <- data.frame(Cluster = distinct_pathways$Cluster, wtd_avg_NES = round(distinct_pathways$wtd_avg_NES,2), Sign = distinct_pathways$.sign)
+
+wtd_avg_nes %>% 
+ggplot(aes(x = wtd_avg_NES, y = Cluster)) + 
+  theme_bw() +
+  geom_point(size = 2, color = "#a3758e") +
+  ylab("") +
+ggtitle("Network Plot Clusters Weighted Avg. Normalized Enrichment Scores") +
+  facet_grid(.~Sign) + 
+    geom_text(data = labels[labels$Sign == "activated",], aes(label= wtd_avg_NES), color = "black", nudge_y = 0.3, size = 3, nudge_x = -0.05)  + 
+  geom_text(data = labels[labels$Sign == "suppressed",], aes(label= wtd_avg_NES), color = "black", nudge_y = 0.3, size = 3, nudge_x = 0.05) +
+  theme(axis.text = element_text(color = "black"))
+
+```
+
+```{r 'avg_NES', cache = T, fig.height=6, fig.width=12}
+# weighted average of NES per cluster
+avg_NES <- distinct_pathways[order(-distinct_pathways$avg_NES), ]
+avg_NES$Cluster <- factor(avg_NES$Cluster, levels = unique(avg_NES$Cluster[order(-avg_NES$avg_NES) ]))
+avg_NES$Sign <- avg_NES$.sign
+labels <- data.frame(Cluster = distinct_pathways$Cluster, avg_NES = round(distinct_pathways$avg_NES,2), Sign = distinct_pathways$.sign)
+
+avg_NES %>% 
+ggplot(aes(x = avg_NES, y = Cluster)) + 
+  theme_bw() +
+  geom_point(size = 2, color = "#a3758e") +
+  ylab("") +
+ggtitle("Avg. Normalized Enrichment Scores per Cluster") +
+  facet_grid(.~Sign) + 
+    geom_text(data = labels[labels$Sign == "activated",], aes(label= avg_NES), color = "black", nudge_y = 0.3, size = 3, nudge_x = -0.05)  + 
+  geom_text(data = labels[labels$Sign == "suppressed",], aes(label= avg_NES), color = "black", nudge_y = 0.3, size = 3, nudge_x = 0.05) +
+  theme(axis.text = element_text(color = "black"))
+
+```
+
+
+
+```{r}
+part1 <- avg_NES
+
+part2 <- new_nt_data %>% dplyr::select(Pathway, Description , Cluster, NES, core_enrichment)
+
+
+core_genes <- lapply(part2$core_enrichment, function(x){
+  genes <- unlist(strsplit(gsub("*/", " ", x), " "))
+  dat <- data.frame(Genes = genes)
+  return(dat)
+  })
+names(core_genes) <- part2$Description
+
+avg_pathway_gene_list <- merge(data.table::rbindlist(core_genes, idcol = "Description"), part1, by = "Description") %>% dplyr::select(Cluster,Description, Pathway, Genes,avg_NES, NES, wtd_avg_NES, max_NES, .sign, enrichmentScore, pvalue, p.adjust)
+
+avg_pathway_gene_list <- avg_pathway_gene_list  %>% group_by(Cluster) %>%  arrange(avg_NES, .sign) %>% arrange(.sign,(avg_NES))
+
+write.csv(avg_pathway_gene_list, "../Data//avg_path_gene_list_20241001.csv", row.names = F)
+```
+
+
+
+
+
+
+```{r 'max_NES', cache = T, fig.height=6, fig.width=12, include=T, eval=T}
+# weighted average of NES per cluster
+max_NES <- distinct_pathways[order(-distinct_pathways$max_NES), ]
+max_NES$Cluster <- factor(max_NES$Cluster, levels = unique(max_NES$Cluster[order(-max_NES$max_NES) ]))
+max_NES$Sign <- max_NES$.sign
+labels <- data.frame(Cluster = distinct_pathways$Cluster, max_NES = round(distinct_pathways$max_NES,2), Sign = distinct_pathways$.sign)
+
+max_NES %>% 
+ggplot(aes(x = max_NES, y = Cluster)) + 
+  theme_bw() +
+  geom_point(size = 2, color = "#a3758e") +
+  ylab("") +
+ggtitle("Max Normalized Enrichment Scores per Cluster") +
+  facet_grid(.~Sign) + 
+    geom_text(data = labels[labels$Sign == "activated",], aes(label= max_NES), color = "black", nudge_y = 0.3, size = 3, nudge_x = -0.05)  + 
+  geom_text(data = labels[labels$Sign == "suppressed",], aes(label= max_NES), color = "black", nudge_y = 0.3, size = 3, nudge_x = 0.05) +
+  theme(axis.text = element_text(color = "black"))
+
+```
+
+```{r}
+dp_max <- distinct_pathways_OG %>% group_by(Cluster) %>% dplyr::slice(which.max(NES)) %>% relocate(Cluster, Pathway, NES, .sign) %>%  mutate(Color = case_when(.sign == "activated" ~ "darkgreen",  .sign == "suppressed" ~ "darkred"))
+
+dp_max$Cluster <- factor(dp_max$Cluster, levels = unique(max_NES$Cluster[order(-max_NES$max_NES) ]))
+
+dp_max <- dp_max[order(-dp_max$NES),]
+
+ dp_max %>% 
+   dplyr::select(Cluster, Pathway, NES, .sign) %>% 
+  kbl(row.names = F, caption = "Max NES + Pathway across clusters") %>% 
+  kable_styling( full_width = F) %>% 
+  scroll_box(width = "800px", height = "500px") %>% 
+  column_spec(4, color = dp_max$Color, bold = T)
+ 
+ 
+```
+
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
+## Pathways + Genes
+
+```{r eval = F, include=F}
+txt<-data.frame(gseGO$ID, gseGO$p.adjust)
+
+# write.table(txt, "go_pathways.txt", append = FALSE, sep = " ", dec = ".",
+#              row.names = FALSE, col.names = TRUE)
+
+```
+
+
+```{r}
+
+selected_paths <- gsub(" ", ".", nt_data$Pathway) # from nt_data which is the gse data merged to get the network plot cluster assigns.
+
+select_paths_n_genes <- path_n_genes[colnames(path_n_genes) %in% selected_paths]
+
+
+
+```
+
+
+```{r}
+df <- select_paths_n_genes
+unique_values <- lapply(df, unique)
+max_rows <- max(sapply(unique_values, length))
+
+# Step 3: Pad columns with fewer rows with "-"
+df_padded <- lapply(unique_values, function(x) {
+  length_diff <- max_rows - length(x)
+  if (length_diff > 0) {
+    c(x, rep("-", length_diff))
+  } else {
+    x
+  }
+})
+
+# Step 4: Create a new dataframe with columns containing only unique values
+df_unique <- as.data.frame(df_padded)
+
+# Step 5: Replace NA values with "-"
+df_unique[is.na(df_unique)] <- "-"
+
+# Print the final dataframe
+# print(df_unique)
+
+DT::datatable(
+  df_unique,
+  options = list(
+    scrollX = TRUE,
+    scrollY = T,
+    searching  = T,
+    pageLength = 100
+  )
+)
+```
+
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;

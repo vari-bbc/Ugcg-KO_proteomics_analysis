@@ -1,0 +1,441 @@
+---
+title: "Final Pathway Enrichment"
+author: "Hannah Damico"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+options(bitmapType = "cairo", scipen = 9999)
+library(tidyverse)
+library(BiocManager)
+library(statmod)
+library(DataExplorer)
+library(stringr)
+library(ggprism)
+library(plotly)
+library(knitr)
+library(DT)
+library(readr)
+library(limma)
+library(reshape2)
+library(pheatmap)
+library(patchwork)
+library(msigdbr)
+library(readxl)
+library(knitr)
+library(kableExtra)
+library(readxl)
+
+
+# these have to be installed before you can use the imputeLCMD package
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install(c("pcaMethods", "impute", "org.Mm.eg.db", "clusterProfiler", "pairwise_termsim"))
+
+library(impute)
+library(pcaMethods)
+library(imputeLCMD)
+library(clusterProfiler)
+library(enrichplot)
+library(org.Mm.eg.db)
+
+top_proteins <- readRDS(("../Data/top_proteins.rds"))
+
+sgpv_top <- readRDS(("../Data/total_top.rds"))
+# write_csv(total_top, file = "total_top.csv")
+```
+
+
+# {.tabset}
+
+## Second Gen. P-Values
+
+### DEGs + Volcano with SGPV
+
+<div class = "row">
+<div class = "col-md-8">
+
+```{r 'volcano plot', fig.height=6, fig.width=8, eval = T, include = T}
+# 
+# sgpv_top <- readRDS("Joe Files/top_proteins.rds")
+
+# sgpv_top$Gene = rownames(sgpv_top) 
+sgpv_top$SGPV[sgpv_top$SGPV == 0] <- 0.00001
+zero <-0.00001
+sgpv_top$Sig = ifelse(sgpv_top$SGPV == zero, "SGPV Signif.", ifelse(sgpv_top$SGPV == 1, "SGPV Equiv.", "NS"))
+
+sgpv_top$Sig = factor(sgpv_top$Sig, levels=c("SGPV Signif.","SGPV Equiv.","NS"))
+# sgpv_top$Gene = gsub(".*_", "", rownames(sgpv_top) )
+# rownames(sgpv_top) <- NULL
+
+
+# this was switched to just grab the sgpv_top 10 genes
+of.interest = unique(sgpv_top$Gene.x[sgpv_top$SGPV == zero])[1:10]
+of.interest = c(of.interest, unique(sgpv_top$Gene.x[sgpv_top$SGPV == 1])[1:10])
+
+# sgpv_top[sgpv_top$Gene %in% of.interest, ]
+
+sgpv_top$Label = rep("") 
+sgpv_top$Label = ifelse(sgpv_top$Gene.x %in% of.interest, sgpv_top$Gene.x, "")
+
+sgpv_top$sz <- case_when(sgpv_top$Sig == "SGPV Signif." | sgpv_top$Sig == "SGPV Equiv." ~ "3", sgpv_top$Sig == "NS"~ "1") 
+sgpv_top$sz <- as.numeric(sgpv_top$sz) 
+
+colorset = c("SGPV Equiv."='cadetblue',"SGPV Signif." = 'red','NS'='black')
+
+
+volc_plot <- ggplot(sgpv_top,aes(x=logFC,y= -log10(SGPV), color = Sig)) +
+  geom_point(aes(size = sz > 1)) +
+  scale_size_manual(values = c(1,2), guide = "none") +
+  xlab("Log2 Fold-Change") +
+  theme(title = element_text(size = 14)) +
+  theme(legend.position = 'right', plot.title = element_text(size = 11, face = "bold"), plot.caption = element_text(hjust = 0, size = 9)) +
+  ggrepel::geom_text_repel(data = sgpv_top[sgpv_top$Label != "", ], aes(label= Label),show.legend=F, box.padding = 4, point.padding = 0.9,max.overlaps = Inf, direction = "both")  +
+  scale_color_manual(values = colorset) +
+  guides(label ="none",text="none") + 
+  scale_x_continuous(limits = c(-12, 13)) + ggtitle("SGPV Protein Abundance", subtitle = "Comparison: Ugcg vs. NTC") + 
+  labs(caption = "Genes with SGPV = 0 were assigned dummy value of 0.00001 so that -log10 transformation \non SGPV did not return infinite value.This explains why multiple genes have -log10(SGPV) ≈ 5")
+
+volc_plot
+
+
+```
+
+
+
+```{r 'volc_plot_raw_pvalue', full_width = F, fig.width=8, fig.height=5}
+# colored by SGPV, plotting Raw p-values
+
+# sgpv_top$Gene = rownames(sgpv_top) 
+sgpv_top$SGPV[sgpv_top$SGPV == 0] <- 0.00001
+zero <-0.00001
+sgpv_top$Sig = ifelse(sgpv_top$SGPV == zero, "SGPV Signif.", "NS")
+
+sgpv_top$Sig = factor(sgpv_top$Sig, levels=c("SGPV Signif.", "NS"))
+# sgpv_top$Gene = gsub(".*_", "", rownames(sgpv_top) )
+# rownames(sgpv_top) <- NULL
+
+
+# this was switched to just grab the sgpv_top 10 genes
+of.interest = unique(sgpv_top$Gene.x[sgpv_top$SGPV == zero])[1:20]
+# of.interest = c(of.interest, unique(sgpv_top$Gene.x[sgpv_top$SGPV == 1])[1:10])
+
+# sgpv_top[sgpv_top$Gene %in% of.interest, ]
+
+sgpv_top$Label = rep("") 
+sgpv_top$Label = ifelse(sgpv_top$Gene.x %in% of.interest, sgpv_top$Gene.x, "")
+
+sgpv_top$sz <- case_when(sgpv_top$Sig == "SGPV Signif." ~ "3", sgpv_top$Sig == "NS"~ "1") 
+sgpv_top$sz <- as.numeric(sgpv_top$sz) 
+
+colorset = c("SGPV Signif." = 'red','NS'='black')
+
+
+volc_plot2 <- 
+  sgpv_top %>% 
+  ggplot(aes(x=logFC,y= -log10(P.Value), color = Sig)) +
+  geom_point(aes(size = sz > 1)) +
+  scale_size_manual(values = c(1,2), guide = "none") +
+  xlab("Log2 Fold-Change") +
+  theme(title = element_text(size = 14)) +
+  theme(legend.position = 'right', plot.title = element_text(size = 11, face = "bold")) +
+  ggrepel::geom_text_repel(data = sgpv_top[sgpv_top$Label != "", ], aes(label= Label),show.legend=F, box.padding = 4, point.padding = 0.9,max.overlaps = Inf, direction = "both")  +
+  scale_color_manual(values = colorset) +
+  guides(label ="none",text="none") + 
+  scale_x_continuous(limits = c(-12, 13)) + ggtitle("SGPV Protein Abundance - Comparison: Ugcg vs. NTC", subtitle = "Raw P-Value, colored by SGPV significance")
+
+volc_plot2
+
+# saveRDS(volc_plot2, "volc_rawp_color_sgpv.rds")
+
+```
+
+
+```{r}
+sgpv_tab <- 
+sgpv_top[sgpv_top$SGPV == 0,][1:20,] %>% dplyr::select(Gene.x, logFC,P.Value, adj.P.Val, SGPV) %>% kbl(caption = "Top Genes (p < 0.01)", row.names = F) %>% kable_styling()  %>% scroll_box(width = "500px", height = "300px")
+
+# saveRDS(sgpv_tab, "sgpv_tab.rds")
+```
+
+
+
+</div>
+
+<div class = "col-md-4">
+
+```{r message=FALSE, eval=T, include=T}
+library(knitr)
+library(kableExtra)
+
+tab <- sgpv_top %>% filter(Gene.x %in% of.interest) %>% dplyr::select(Gene.x, SGPV) %>% mutate(SGPV = as.character(round(SGPV,1)), Description = case_when(SGPV == as.character("0") ~ "Difference", SGPV == "1" ~ "Equivalence")) %>% arrange(SGPV)
+
+tab$Status_Color <- ifelse(tab$Description == "Difference", "red", "cadetblue")
+
+tab %>%
+  dplyr::select(-Status_Color) %>% kbl(caption = "Second Gen. P-Values") %>% kable_styling(full_width = F) %>%
+  column_spec(3, color = tab$Status_Color)
+# ifelse("Description" == "Difference", "red", "cadetblue")
+```
+
+</div>
+</div>
+
+
+## Custom Gene List GSEA {.tabset}
+
+### Top Enriched Genes + PValues
+
+When looking at our custom gene list, we found the following results when adjusting for false positives. These results were assessed by both the biostats and bionformatics team members.
+
+```{r}
+df = top_proteins[!duplicated(top_proteins$Gene),]
+
+# we want the log2 fold change 
+original_gene_list <- df$logFC
+
+# name the vector
+names(original_gene_list) <- df$Gene
+
+# omit any NA values 
+gene_list<-na.omit(original_gene_list)
+
+# sort the list in decreasing order (required for clusterProfiler)
+gene_list = sort(gene_list, decreasing = TRUE)
+```
+
+
+```{r}
+custom_gene_list <- read_excel("~/bbc-research/LONJ_20240208_Proteomics-VBCS1122/41467_2019_12464_MOESM7_ESM.xlsx", skip = 1)
+# View(custom_gene_list)
+```
+
+
+```{r message=FALSE, warning = FALSE, eval = TRUE, include = TRUE}
+genes <- toupper(names(gene_list))
+## Daisy Code starts here
+daniel <- custom_gene_list
+
+daniel_list <- as.list(daniel)
+
+daniel_list <- lapply(daniel_list, function(x) x[!is.na(x)])
+
+###
+
+cat("printing number of genes in each gene set: " , sep = "\n\n")
+
+lapply(daniel_list, function(x) length(x)) %>% as.data.frame()
+
+create_gs_data_frame <- function(x) {
+  df <- data.frame(gs_name = rep(names(daniel_list)[x], length(daniel_list[[x]])), 
+                   entrez_gene = unlist(daniel_list[[x]]))
+  return(df)
+}
+
+gs_dataset <- lapply(seq_along(daniel_list), function(x) create_gs_data_frame(x))
+
+gs_dataset_df <-  do.call(rbind.data.frame, gs_dataset)
+
+
+gs_dataset_entrez <-
+  gs_dataset_df %>% mutate(
+    entrezid = mapIds(
+      org.Mm.eg.db::org.Mm.eg.db,
+      keys = gs_dataset_df$entrez_gene,
+      keytype = "SYMBOL",
+      column = "ENTREZID"
+    )
+  )
+
+###
+
+enrichment_Daniel <- function(DE_gene_res = DE_gene_res, # ----
+                             name = name) {
+  
+  DE_gene_res <- DE_gene_res %>%  mutate(logFC = -log10(P.Value)*sign(logFC)) # 
+
+  gene_list <- DE_gene_res$logFC
+  #cat(paste0("There are ", length(gene_list), " genes"), sep = "\n")
+  names(gene_list) <- DE_gene_res$Gene ## use gene symbol directly. 
+  if(any(is.na(gene_list))){ 
+    gene_list = gene_list[-which(is.na(gene_list))]
+  }
+  if(any(is.na(names(gene_list)))) {
+    gene_list = gene_list[-which(is.na(names(gene_list)))]
+  }
+  
+  gene_list <- gene_list[!duplicated(names(gene_list))]
+  #cat(paste0("After removing genes with duplicated names, there are ", length(gene_list), " genes"), sep = "\n")
+  ## last, sort genes. 
+  gene_list <- sort(gene_list, decreasing = TRUE)
+  
+  set.seed(1234)
+  gsea <- GSEA(gene_list, TERM2GENE = gs_dataset_df, maxGSSize = 1200, 
+               pvalueCutoff = 0.1) 
+  
+  # print the dotplot
+  p <- dotplot(gsea)
+  ls <- list(dotplot = p, gsea = gsea, gene_list = gene_list)
+  return(ls)
+  
+  # saveRDS(gsea, paste0("gsea_data/", name, "_gsea_res.rds"))
+  # gsea_df <- gsea %>% as.data.frame()
+  # write_tsv(gsea_df, file = paste0("gsea_data/", name, ".txt"))
+  # save_plot(paste0("gsea_data/", name, ".pdf"), 
+  #           p, base_height = 5, base_width = 4.5)
+} # -----
+
+
+DE_gene_res_compA <- top_proteins %>% mutate(Gene = toupper(Gene))
+# DE_gene_res_compB <- read_tsv("../../results_remove_outlier/14dpi_OEvsEV.txt")
+
+dp <- enrichment_Daniel(DE_gene_res = DE_gene_res_compA, name = "top_enriched")
+
+# str_split
+# these contribute most to enrichemnt 
+
+ # top_proteins %>% mutate(Gene = toupper(Gene))
+
+```
+
+<div class = "row">
+<div class = "col-md-7">
+
+```{r  'dotplot', eval = TRUE, include = TRUE, cache=TRUE}
+
+dp$dotplot + ggtitle(paste("Genes sorted by -log10(P.Value)*sign(logFC)) "))
+
+```
+
+</div>
+
+<div class = "col-md-4">
+
+```{r  eval = T, include = T}
+enrichment_score_tab1 <- data.frame(Gene = dp$gsea$ID, Enrichment_Score = dp$gsea$enrichmentScore)
+
+enrichment_score_tab1 %>% kbl(caption = "Enrichment Scores") %>% kable_styling(full_width = F)
+
+```
+
+</div>
+</div>
+
+
+### Enrichment Plots
+
+```{r 'enrichment plots', eval = T, include = T, cache = T}
+library(fgsea)
+
+enrichment_plots <- lapply(dp$gsea$ID, function(name){
+  
+  plt <- plotEnrichment(dp$gsea[[name]], dp$gene_list) + ggtitle(name)
+  return(plt)
+})
+
+
+names(enrichment_plots) <- dp$gsea$ID
+
+enrichment_plots
+```
+
+
+### Most Enriched Genes in Pathway
+
+```{r eval = TRUE, results = 'asis', cache=T}
+# most enriched genes
+
+most_enriched1 <- lapply(dp$gsea$core_enrichment, function(x){unlist(strsplit(gsub("*/", " ", x), " "))})
+
+names(most_enriched1) <- dp$gsea$ID
+
+top_gene_ids <- top_proteins %>% mutate(Gene.ID = rownames(top_proteins))
+
+most_enriched_IFN <- ## IFN ---- 
+  data.frame(
+    Pathway = c(
+      rep(dp$gsea$ID[1], times = length(most_enriched1$`IFN Response`)+1)),
+    Most_Enriched_Gene = c(
+      most_enriched1$`IFN Response`[most_enriched1$`IFN Response` != "PARP9"], sgpv_top$Gene.ID[sgpv_top$Gene.x == "Parp9"][1],sgpv_top$Gene.ID[sgpv_top$Gene.x == "Parp9"][2]),
+    logFC = c(sgpv_top$logFC[toupper(top_proteins$Gene) %in% most_enriched1$`IFN Response`[most_enriched1$`IFN Response` != "PARP9"]], sgpv_top$logFC[sgpv_top$Gene.x == "Parp9"][1],sgpv_top$logFC[sgpv_top$Gene.x == "Parp9"][2]),
+    raw_PValue = c(sgpv_top$P.Value[toupper(top_proteins$Gene) %in% most_enriched1$`IFN Response`[most_enriched1$`IFN Response` != "PARP9"]], sgpv_top$P.Value[sgpv_top$Gene.x == "Parp9"][1],sgpv_top$P.Value[sgpv_top$Gene.x == "Parp9"][2]),
+    FDR = c(sgpv_top$adj.P.Val[toupper(top_proteins$Gene) %in% most_enriched1$`IFN Response`[most_enriched1$`IFN Response` != "PARP9"]], sgpv_top$adj.P.Val[sgpv_top$Gene.x == "Parp9"][1],sgpv_top$adj.P.Val[sgpv_top$Gene.x == "Parp9"][2]),
+    SGPV = c(sgpv_top$SGPV[toupper(top_proteins$Gene) %in% most_enriched1$`IFN Response`[most_enriched1$`IFN Response` != "PARP9"]], sgpv_top$SGPV[sgpv_top$Gene.x == "Parp9"][1],sgpv_top$SGPV[sgpv_top$Gene.x == "Parp9"][2])
+  )
+
+
+most_enriched_CD8_cytotoxic <- ## cytotoxic ----
+  data.frame(
+    Pathway = c(
+      rep(dp$gsea$ID[3], times = length(most_enriched1$`CD8 Cytotoxic`)+1)),
+    Most_Enriched_Gene = c(
+      most_enriched1$`CD8 Cytotoxic`[most_enriched1$`CD8 Cytotoxic` != "EOMES"], sgpv_top$Gene.ID[sgpv_top$Gene.x == "Eomes"][1],sgpv_top$Gene.ID[sgpv_top$Gene.x == "Eomes"][2]),
+        logFC = c(sgpv_top$logFC[toupper(top_proteins$Gene) %in% most_enriched1$`CD8 Cytotoxic`[most_enriched1$`CD8 Cytotoxic`!= "EOMES"]], sgpv_top$logFC[sgpv_top$Gene.x == "Eomes"][1],sgpv_top$logFC[sgpv_top$Gene.x == "Eomes"][2]),
+    raw_PValue = c(sgpv_top$P.Value[toupper(top_proteins$Gene) %in% most_enriched1$`CD8 Cytotoxic`[most_enriched1$`CD8 Cytotoxic` != "EOMES"]], sgpv_top$P.Value[sgpv_top$Gene.x == "Eomes"][1],sgpv_top$P.Value[sgpv_top$Gene.x == "Eomes"][2]),
+    FDR = c(sgpv_top$adj.P.Val[toupper(top_proteins$Gene) %in% most_enriched1$`CD8 Cytotoxic`[most_enriched1$`CD8 Cytotoxic` != "EOMES"]], sgpv_top$adj.P.Val[sgpv_top$Gene.x == "Eomes"][1],sgpv_top$adj.P.Val[sgpv_top$Gene.x == "Eomes"][2]),
+    SGPV = c(sgpv_top$SGPV[toupper(top_proteins$Gene) %in% most_enriched1$`CD8 Cytotoxic`[most_enriched1$`CD8 Cytotoxic` != "EOMES"]], sgpv_top$SGPV[sgpv_top$Gene.x == "Eomes"][1],sgpv_top$SGPV[sgpv_top$Gene.x == "Eomes"][2])
+  )
+
+
+
+ff <- lapply(names(most_enriched1)[c(2,4,5)], function(name){ #---
+  frame <- most_enriched1[[name]]
+  
+   df <-  data.frame(
+    Pathway =  c(
+      rep(name, times = length(most_enriched1[[name]]))),
+    Most_Enriched_Gene = c(
+      most_enriched1[[name]]
+    ),
+    logFC = c(sgpv_top$logFC[toupper(top_proteins$Gene) %in% most_enriched1[[name]]]),
+    raw_PValue = sgpv_top$P.Value[toupper(top_proteins$Gene) %in% most_enriched1[[name]]],
+    FDR = sgpv_top$adj.P.Val[toupper(top_proteins$Gene) %in% most_enriched1[[name]]],
+    SGPV = sgpv_top$SGPV[toupper(top_proteins$Gene) %in% most_enriched1[[name]]]
+  )
+})
+
+names(ff) <- names(most_enriched1)[c(2,4,5)]
+# PARP9 is not unique
+# sgpv_top %>% mutate(Gene = toupper(Gene)) %>% filter(Gene %in% most_enriched1$`IFN Response`) %>% count(Gene) %>% filter(n>1)
+# 
+# check_n <- top %>% count(Gene) %>% filter(n>1)
+# check_n <- check_n$n
+# 
+# top$Gene[table(top$Gene) > 1]
+
+# tells us which pathways have duplicates & which are the duplicates
+chk <-lapply(names(most_enriched1), function(names){
+  a <-length(most_enriched1[[names]])
+  b <-length(top_proteins$P.Value[toupper(top_proteins$Gene) %in% most_enriched1[[names]]])
+  c <- sgpv_top %>% mutate(Gene = toupper(Gene.x)) %>% filter(Gene %in% most_enriched1[[names]]) %>% count(Gene) %>% filter(n>1)
+  return(list(a, b, c))
+})
+names(chk) <- names(most_enriched1)
+
+
+a <- base::do.call(rbind, ff) # normal pathways
+b <- rbind(most_enriched_IFN, most_enriched_CD8_cytotoxic) # duplicated pathways
+c <- rbind(a,b) # all pathways with pvalues, FDRs, SGPVs
+ 
+# c %>% group_by(Pathway) %>% arrange(raw_PValue)
+# c %>% group_by(SGPV, Pathway) %>% arrange(SGPV)
+
+c %>% 
+  group_by(SGPV, Pathway) %>% 
+  arrange(SGPV) %>% 
+  kbl(caption = "Most Enriched Genes in Pathway - logFC ordered", row.names = F) %>% kable_styling(full_width = F) %>% 
+  row_spec(1, color = "red") %>%
+  footnote("NME1 in Proliferation pathway shows significantly different across groups for second gen. p-values", escape = F)
+
+```
+
+</div>
+
+
+
+
+
